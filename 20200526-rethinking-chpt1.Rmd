@@ -2,7 +2,9 @@
 title: '20200526-rethinking-chpt1_win10'
 author: 'diaorch'
 date: '5/26/2020'
-output: html_document
+output: 
+    html_document: 
+        toc: true
 ---
 
 ```{r, include = FALSE}
@@ -15,6 +17,8 @@ options(useFancyQuotes = FALSE)
 ```
 
 ## Installation of `rstan` on a Windows 10 machine
+
+Below is a breakdown of steps needed to install the `rethinking` package with a freshly `R` and `RStudio` installation, starting from installing the dependencies. Codes are included below the step list.
 
 1. install `Rtools`: download `Rtools` from and follow the instruction on the [CRAN "Using Rtools40 on Windows" page](https://cran.r-project.org/bin/windows/Rtools/), take notice to check if the version of `RTools` is compatible with *your* `R` version. Also, to "restart R" as instructed, assuming you are using `RStudio`, you would need to quit and reopen the RStudio, and only restarting the R session within RStudio would not update the path. 
 
@@ -65,7 +69,82 @@ help(package=rethinking)
 ## verify successful installation if in-system help opens up
 ```
 
-## Linear examples with `stats::lm()`, `brms`, and `rethinking`
+## Linear regression with two independent categorical variables - an example with `stats::lm()`, `brms`, and `rethinking`
+
+Consider a linear regression model in the form of: 
+
+$$
+y_i = \beta_0 + \beta_1 x_{1,i} + \beta_2 x_{2,i} + \beta_3 x_{1,i} x_{2,i} + \epsilon_{i}
+$$
+
+### Data simulation
+
+What information we need for each sample as a starting point is:
+
+1. "treated/untreated" by drug A: as a integer, in this case binary (0 or 1) 
+2. "treated/untreated" by drug B: as a integer, in this case binary (0 or 1) 
+3. "measurement of treatment effects": as a float, in this case randomly generated
+
+``` {r}
+set.seed(13)
+drugA <- c(rep(0, 10), rep(1, 10))
+drugB <- rep(c(rep(0, 5), rep(1, 5)), 2)
+effect <- c(rnorm(5), rnorm(5) + 2, rnorm(5) + 3, rnorm(5) + 10)
+alldat <- data.frame(
+    'drugA' = drugA, 'drugB' = drugB, 'effect' = effect
+)
+print(alldat)
+```
+
+### Linear regression with two independent categorical variables - with `stats::lm()`
+
+```{r}
+twovarMod <- lm(effect ~ drugA + drugB + drugA:drugB, data = alldat)
+print(summary(twovarMod))
+```
+
+### Linear regression with two independent categorical variables - with `brms`
+
+Fitting a Bayesian Generalized Linear Multivariate Model:
+
+(Expect a large chunk of output as the BRMS fit finishes up.)
+
+```{r}
+library('brms')
+alldatFactor <- data.frame(
+    'drugA' = factor(drugA, levels = c(0, 1)), 'drugB' = factor(drugB, levels = c(0, 1)), 'effect' = effect
+)
+brmCatMod <- brm(effect ~ drugA + drugB + drugA:drugB, data = alldatFactor)
+```
+
+As an interesting side note: it took me a good while for the BRMS fitting run to get pass compiling the C++ model. (There is always a balance between the result performance and the speed.)
+
+```{r}
+print(summary(brmMod))
+```
+
+```{r}
+conditional_effects(brmCatMod, effects = 'drugA:drugB')
+# to see all effects (both individual and two-ways)
+# remove the argument effects from the command above
+```
+
+`R` is always interesting when it comes to factors. What if we don't
+
+```{r message = FALSE, warning = FALSE}
+brmMod <- brm(effect ~ drugA + drugB + drugA:drugB, data = alldat, silent = TRUE)
+conditional_effects(brmMod)
+```
+
+### Linear regression with two independent categorical variables - with `rethinking`
+
+### Side-by-side comparison of the fittings
+
+```{r}
+# prepare for side-by-side comparison
+print(twovarMod$coefficients)
+print(fixef(brmCatMod))
+```
 
 ## Supplementary information
 
@@ -134,3 +213,8 @@ sessionInfo()
 
 1. [ ] add resource links
 2. [ ] add support to other operation systems
+3. [ ] add repo-level "getting started with R and RStudio" and "Some struggles with Windows and how to solve hopefully under 5 hours"
+4. [ ] double check encoding and line breaks since this is written on my Win10 machine
+5. [ ] add "slides" for chapter 1 (and organize: as a separate file?)
+6. [ ] add pointers to lab meeting slides on regression (20200518) and BRMS (20190722)
+7. [ ] add model selection examples in BRMS?
