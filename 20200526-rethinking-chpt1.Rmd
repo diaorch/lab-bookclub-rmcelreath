@@ -65,7 +65,13 @@ help(package=rethinking)
 ## verify successful installation if in-system help opens up
 ```
 
-## 
+## Linear examples with `stats::lm()`, `brms`, and `rethinking`
+
+## Supplementary information
+
+### Installation of package `brms`
+
+The package `brms` is available on CRAN. Install by running `install.packages('brms')` and verify the installation by running `library('brms')`. 
 
 ## For future references
 
