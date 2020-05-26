@@ -121,29 +121,76 @@ As an interesting side note: it took me a good while for the BRMS fitting run to
 
 ```{r}
 print(summary(brmCatMod))
-```
-
-```{r}
 conditional_effects(brmCatMod, effects = 'drugA:drugB')
 # to see all effects (both individual and two-ways)
 # remove the argument effects from the command above
 ```
 
-`R` is always interesting when it comes to factors. What if we don't
+`R` is always interesting when it comes to factors. What if we don't convert the `drugA` and `drugB` column from numerics to factors? As you can see in the `lm()` it does not cause *major* hiccup but in `brms::brm()`, if we do the following instead:
 
-```{r message = FALSE, warning = FALSE}
-brmMod <- brm(effect ~ drugA + drugB + drugA:drugB, data = alldat, silent = TRUE)
+```{r message=FALSE, warning=FALSE}
+brmMod <- brm(effect ~ drugA + drugB + drugA:drugB, data = alldat, silent = TRUE, refresh = 0)
 conditional_effects(brmMod)
+```
+
+Notice the types of figures compared to the previous results with categorical inputs.
+
+If we check the chains:
+
+```{r}
+plot(brmCatMod)
 ```
 
 ### Linear regression with two independent categorical variables - with `rethinking`
 
+The `map()` function, standing for *Maximum a posteriori* fitting, in the first edition, has now been renamed to `quad()`, although the original function can still be called. If you are using an older version of `rethinking`, remember that just as for all the functions that has any potential to create ambiguity, call the function with the package name specified (e.g. `rethinking::map()`). Here I am using `quad()`.
+
+The function renaming here is explained as in the [README for the `rethinking` package](https://github.com/rmcelreath/rethinking/blob/master/README.md):
+
+> It was renamed, because the name map was misleading. This function produces quadratic approximations of the posterior distribution, not just maximum a posteriori (MAP) estimates.
+
+Consider model:
+
+$$
+y_i \sim \text{Normal}(\mu_i, \sigma) \\
+\mu_i = \alpha + \beta_a x_{a,i} + \beta_b x_{b,i} + \beta_{ab} x_{a,i} + x_{a,i} \\
+\alpha \sim \text{Normal}(0, 5) \\
+\beta \sim \text{Normal}(0, 5)\\
+\sigma \sim \text{Uniform}(0, 5)\\
+$$
+
+In `rethinking`, a prior of `a ~ dnorm(0, 10)` translates to `dnorm(a, mean = 0, sd = 10)`.
+
+```{r}
+library('rethinking')
+fit5 <- quap(
+    alist(
+        effect ~ dnorm(mu, sigma), 
+        mu <- a + ba * drugA + bb * drugB + bab * drugA * drugB, 
+        a ~ dnorm(0, 5), 
+        ba ~ dnorm(0, 5), bb ~ dnorm(0, 5), bab ~ dnorm(0, 5), 
+        sigma ~ dunif(0, 5)), 
+    data = alldat)
+fit10 <- quap(
+    alist(
+        effect ~ dnorm(mu, sigma), 
+        mu <- a + ba * drugA + bb * drugB + bab * drugA * drugB, 
+        a ~ dnorm(0, 10), 
+        ba ~ dnorm(0, 10), bb ~ dnorm(0, 10), bab ~ dnorm(0, 10), 
+        sigma ~ dunif(0, 5)), 
+    data = alldat)
+```
+
 ### Side-by-side comparison of the fittings
 
 ```{r}
-# prepare for side-by-side comparison
+# stats::lm()
 print(twovarMod$coefficients)
+# brms::brm()
 print(fixef(brmCatMod))
+# rethinking::quap()
+print(rethinking::precis(fit5))
+print(rethinking::precis(fit10))
 ```
 
 ## Supplementary information
@@ -218,3 +265,4 @@ sessionInfo()
 5. [ ] add "slides" for chapter 1 (and organize: as a separate file?)
 6. [ ] add pointers to lab meeting slides on regression (20200518) and BRMS (20190722)
 7. [ ] add model selection examples in BRMS?
+8. [ ] add references to detailed contents as the contents build up for the following chapters
