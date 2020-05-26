@@ -120,7 +120,7 @@ brmCatMod <- brm(effect ~ drugA + drugB + drugA:drugB, data = alldatFactor)
 As an interesting side note: it took me a good while for the BRMS fitting run to get pass compiling the C++ model. (There is always a balance between the result performance and the speed.)
 
 ```{r}
-print(summary(brmMod))
+print(summary(brmCatMod))
 ```
 
 ```{r}
