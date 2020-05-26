@@ -1,0 +1,80 @@
+---
+title: '20200526-rethinking-chpt1'
+author: 'diaorch'
+date: '5/26/2020'
+output: html_document
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# disable fancy quotes, 
+# which is causing encoding errors in my Win10, R4.0, RStudio1.3.959, 
+# as of 20200526
+# see https://community.rstudio.com/t/unicode-replacement-character-issue-in-rstudio-only-within-r-markdown-files/7621/9
+options(useFancyQuotes = FALSE)
+```
+
+```{r, include = FALSE, eval = FALSE}
+Sys.getlocale()
+Sys.setlocale(category = "LC_ALL", locale = "English_United States.1252")
+```
+
+## Installation of `rstan` on a Windows 10 machine
+
+1. install `Rtools`: download `Rtools` from and follow the instruction on the [CRAN "Using Rtools40 on Windows" page](https://cran.r-project.org/bin/windows/Rtools/), take notice to check if the version of `RTools` is compatible with *your* `R` version. Also, to "restart R" as instructed, assuming you are using `RStudio`, you would need to quit and reopen the RStudio, and only restarting the R session within RStudio would not update the path. 
+2. install `devtools` if needed, you can check by running `find.package('devtools')`. If the package is not found (e.g. output `Error in find.package('devtools') : there is no package called ‘devtools’`), install by running `install.packages('devtools)`.
+3. load `devtools` and verify `Rtools` installation by running `find_rtools()`. This step is ordered as such because the function `find_rtools()` is in the `devtools` package.
+4. install `RStan` by running `install.packages("rstan", repos = "https://cloud.r-project.org/", dependencies = TRUE)`. This actually installs `RStan` from source, which is the reason for all previous steps needed in Windows
+
+```{r eval = FALSE}
+# step 1
+# download and install RTools40 from CRAN Rtools website, not shown
+# put the location of the Rtools make utilities (bash, make, etc) on the PATH
+# there are multiple ways to do it, one way is to run the next line in R
+writeLines('PATH="${RTOOLS40_HOME}\\usr\\bin;${PATH}"', con = '~/.Renviron')
+# restart R - restart the whole RStudio if in one, then verify the path
+Sys.which('make')
+## "C:\\rtools40\\usr\\bin\\make.exe"
+
+# step 2
+find.package('devtools')
+## Error in find.package('devtools') : there is no package called ‘devtools’
+if(!require('devtools')){
+    install.packages('devtools', dependencies = TRUE)
+}
+## 20200526, Win10, the package `backports` needed to be explicitly installed 
+## for `devtools` to be correctly loaded
+## I suspect that is a compatibility issue in `backports` with R 4.0
+## when prompted to choose whether to install from source instead of binary, 
+## confirm to use the source (the source is of later versioni than the binary)
+# install.packages('backports')
+
+# step 3
+library('devtools')
+find_rtools()
+
+# step 4
+install.packages('rstan', 
+                 repos = 'https://cloud.r-project.org/', dependencies = TRUE)
+library('rstan')
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
