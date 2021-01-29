@@ -1,0 +1,789 @@
+---
+title: 'McElreath Chapter 5: DAGs and multiple regression'
+author: "Mike Wolfe"
+date: "12/8/2020"
+output: 
+    beamer_presentation:
+classoption: "aspectratio=169"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, show = FALSE, warning = FALSE)
+library(tidyverse)
+library(patchwork)
+library(dagitty)
+library(ggdag)
+theme_set(theme_bw())
+```
+
+## Multiple Regression: Motivations
+* Statistical "control" for confounding variables
+* Accounting for multiple causation
+* Allowing for "interactions" or effects of one variable that depend on the value of another
+
+"However, multiple regression can be worse than useless ... just adding variables to a
+model can do a lot of damage."
+
+## What could be a cause of divorce?
+- First example: statistically "controlling" for confounding variables
+- We have three variables we are interested in:
+    - Divorce rate (D)
+    - Marriage rate (M)
+    - Median age at marriage (A)
+    
+```{r show = FALSE}
+library(rethinking)
+data(WaffleDivorce)
+d <- WaffleDivorce
+d <-
+    d %>%
+    mutate(d = standardize(Divorce),
+           m = standardize(Marriage),
+           a = standardize(MedianAgeMarriage))
+rm(WaffleDivorce)
+detach(package:rethinking, unload = T)
+library(brms)
+```
+```{r, show = FALSE}                                                                               
+b5.1 <-                                                                              
+    brm(data = d,                                                                    
+        family = gaussian,                                                           
+        d ~ 1 + a,                                                                   
+        prior = c(prior(normal(0, 0.2), class = Intercept),                          
+                  prior(normal(0, 0.5), class = b),                                  
+                  prior(exponential(1), class = sigma)),                             
+        iter = 2000, warmup = 1000, chains = 4, cores = 4,                           
+        seed = 5,                                                                    
+        sample_prior = T,                                                            
+        file = "chapter5_files/fits/b05.01")                                                        
+```   
+
+```{r show = FALSE}
+nd <- tibble(a = seq(from = -3, to = 3.2, length.out = 30))
+
+p1 <- fitted(b5.1,
+       newdata = nd) %>%
+    data.frame() %>%
+    bind_cols(nd) %>%
+    
+    ggplot(aes(x = a)) +
+    geom_smooth(aes(y = Estimate, ymin = Q2.5, ymax = Q97.5),
+                stat = "identity",
+                alpha = 1/5, size = 1/4) +
+    geom_point(data = d,
+               aes(y = d),
+               size = 2) +
+    labs(x = "Median age marriage (std)",
+         y = "Divorce rate (std)",
+         title = "D is higher at lower A") +
+    coord_cartesian(xlim = range(d$a),
+                    ylim = range(d$d))
+```  
+
+```{r show = FALSE}
+b5.2 <-
+    brm(data = d,
+        family = gaussian,
+        d ~ 1 + m,
+        prior = c(prior(normal(0, 0.2), class = Intercept),
+                  prior(normal(0, 0.5), class = b),
+                  prior(exponential(1), class = sigma)),
+        iter = 2000, warmup = 1000, chains = 4, cores = 4,
+        seed = 5,
+        file = "chapter5_files/fits/b05.02")
+```
+
+
+```{r show = FALSE}
+nd <- tibble(m = seq(from = -2.5, to = 3.5, length.out = 30))
+
+p2 <- fitted(b5.2, newdata = nd) %>%
+        data.frame() %>%
+        bind_cols(nd) %>%
+        
+        ggplot(aes(x = m)) +
+        geom_smooth(aes(y = Estimate, ymin = Q2.5, ymax = Q97.5),
+                    stat = "identity",
+                    alpha = 1/5,
+                    size = 1/4) +
+        geom_point(data = d,
+                   aes(y = d),
+                   size = 2) +
+        labs(x = "Marriage rate (std)",
+             y = "Divorce rate (std)",
+             title = "D is higher at higher M") +
+        coord_cartesian(xlim = range(d$m),
+                        ylim = range(d$d))
+```
+
+```{r, fig.width = 7, fig.height = 2.5}
+p1 | p2
+```
+
+## From statistical associations to causal inference
+
+- So far we have been talking strictly about statistical associations. But what
+if we want to intervene?
+- Maybe the state has a vested interest in reducing the Divorce rate. How to do
+it?
+- Would we want to incentivize a later age of marriage? Or just discourage
+people from getting married? Should we do both?
+
+## Directed Acyclic Graphs (DAGs) and causal inference
+::: columns
+
+:::: column
+
+```{r fig.width = 3, fig.height = 3}
+set.seed(5)
+dag_coords <-
+    tibble(name = c("A", "M", "D"),
+           x = c(1, 3, 2),
+           y = c(2, 2, 1))
+
+(d1 <- dagify( M ~ A,
+        D ~ A + M,
+        coords = dag_coords) %>%
+    ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+        geom_dag_point(size = 10) +
+        geom_dag_text() +
+        geom_dag_edges() +
+    scale_x_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    scale_y_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    theme(panel.grid = element_blank()))
+```
+
+::::
+
+:::: column
+- To move beyond a strictly statistical association we need to infuse more
+information into the system
+- __Directed__ 
+    - arrows indicate directions of causal influence
+- __Acyclic__
+    - cannot eventually flow back on itself. No circular causes
+- __Graph__
+    - made of nodes and connections between them
+::::
+
+:::
+
+##  Univariate regressions consider the __total__ effect of a variable
+
+```{r show = FALSE}
+dag_coords <-
+    tibble(name = c("A", "M", "D"),
+           x = c(1, 3, 2),
+           y = c(2, 2, 1))
+d2 <- 
+     dagify(M ~ A,
+            D ~ A,
+            coords = dag_coords) %>%
+     ggdag(node_size = 10) +
+     scale_x_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    scale_y_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    theme(panel.grid = element_blank())
+```
+
+```{r, fig.height = 4, fig.width = 7}
+(p1 | p2) / (d1 | d2)
+```
+
+
+## What happens to the association when we include both variables?
+
+Let's fit the model in the text:
+\begin{center}
+$D_i \sim \text{Normal}(\mu_i, \sigma)$
+
+$\mu_i = \alpha + \beta_1 M_i + \beta_2 A_i$
+
+$\alpha \sim \text{Normal}(0, 0.2)$
+
+$\beta_1 \sim \text{Normal}(0, 0.5)$
+
+$\beta_2 \sim \text{Normal}(0, 0.5)$
+
+$\sigma \sim \text{Exponential}(1)$
+\end{center}
+
+## What happens to the association when we include both variables?
+
+```{r show = FALSE}
+b5.3 <-
+    brm(data = d,
+        family = gaussian,
+        d ~ 1 + m + a,
+        prior = c(prior(normal(0, 0.2), class = Intercept),
+                  # specifies the prior for both betas
+                  prior(normal(0, 0.5), class = b),
+                  prior(exponential(1), class = sigma)),
+        iter = 2000, warmup = 1000, chains = 4, cores = 4,
+        seed = 5,
+        file = "chapter5_files/fits/b05.03")
+```
+
+```{r fig.width = 7, fig.height = 4}
+bind_cols(
+    # take model 1
+    posterior_samples(b5.1) %>%
+        transmute(`A only_beta[A]` = b_a),
+    # model 2
+    posterior_samples(b5.2) %>%
+        transmute(`M only_beta[M]` = b_m),
+    # model 3
+    posterior_samples(b5.3) %>%
+        transmute(`Both_beta[M]` = b_m,
+                  `Both_beta[A]` = b_a)) %>%
+# we now have a dataframe with samples for each coefficient as columns
+    pivot_longer(everything()) %>%
+    group_by(name) %>%
+    summarise(mean = mean(value),
+              ll = quantile(value, prob = 0.025),
+              ul = quantile(value, prob = .975)) %>%
+    # pull out model names from parameter names
+    separate(name, into = c("fit", "parameter"), sep = "_") %>%
+    ggplot(aes(x = mean, xmin = ll, xmax = ul, y = fit)) +
+    geom_vline(xintercept = 0, alpha = 1/5) +
+    geom_pointrange() +
+    labs(x = "Parameter Posterior Value", y = NULL) +
+    facet_wrap(~parameter, ncol = 1, labeller = label_parsed)
+```
+
+## Considering the implications of possible DAGs
+
+- What do each of these models imply and what can we test with the data in hand?
+- Our multiple regression model addresses the following questions:
+    - After I already know M, what additional value is there in also knowing A?
+    - After I already know A, what additional value is there in also knowing M?
+
+```{r, fig.width = 7, fig.height = 3}
+d1 | d2
+```
+
+## Using DAGs together with a model to make counterfactual plots
+- Simplest plot is to change one variable while holding others constant
+- This ignores the implicit causal structure
+    - Suppose you incentivize delaying marriage
+    - "Surely this will also decrease the number of couples who ever get married"
+    - "An extraordinary and evil degree of control over people would be necessary to really hold marriage rate constant while forcing everyone to marry at a later age"
+- McElreath suggests a recipe on how to create counterfactual plots taking into account a given causal model
+    - Pick a variable to manipulate
+    - Define a range of values for that variable
+    - For each value of that range and for each sample in the posterior use the causal model to simulate the values of the other variables, including the outcome
+    
+    
+## Using DAGs together with a model to make counterfactual plots
+
+Suppose we had some strong evidence outside evidence that DAG 1 is actually
+the correct one. How can we make estimates about intervening on A?
+
+```{r, fig.width = 3.5, fig.height = 2, fig.align='center'}
+d1
+```
+
+## Simulatenously estimating A's impact on M and D
+::: columns
+
+:::: {.column width=0.3}
+McElreath's quap
+\tiny
+```{r echo = T, eval=F}
+m5.3_A <- quap(
+    alist(
+        ## A -> D <- M
+        D ~ dnorm(mu, sigma),
+        mu <- a + bM*M + bA*A,
+        a ~ dnorm(0, 0.2),
+        bM ~ dnorm(0, 0.5),
+        bA ~ dnorm(0, 0.5),
+        sigma ~ dexp(1),
+        ## A -> M
+        M ~ dnorm(mu_M, sigma_M),
+        mu_M <- aM + bAM*A,
+        aM ~ dnorm(0, 0.2),
+        bAM ~ dnorm(0, 0.5),
+        sigma_M ~ dexp(1)
+    ), data = d)
+```
+\normalsize
+::::
+
+:::: {.column width=0.7}
+brms
+\tiny
+```{r echo = T, results = 'hide', error = FALSE, warning = FALSE, message = FALSE}
+d_model <- bf(d ~ 1 + a + m)
+m_model <- bf(m ~ 1 + a)
+b5.3_A <-
+    brm(data = d,
+        family = gaussian,
+        d_model + m_model + set_rescor(FALSE),
+        prior = c(prior(normal(0, 0.2), class = Intercept, resp = d),
+                  prior(normal(0, 0.5), class = b, resp = d),
+                  prior(exponential(1), class = sigma, resp = d),
+                  
+                  prior(normal(0, 0.2), class = Intercept, resp = m),
+                  prior(normal(0, 0.5), class = b, resp = m),
+                  prior(exponential(1), class = sigma, resp = m)),
+        iter = 2000, warmup = 1000, chains = 4, cores = 4,
+        seed = 5,
+        file = "chapter5_files/fits/b05.03_A")
+```
+\normalsize
+::::
+:::
+- Fit multivariate model above
+- Simulate observations of M when changing A
+- Simulate observations of D as a combination of changed As and simulated Ms
+
+## What happens when we intervene to change A?
+
+```{r, fig.width = 7, fig.height = 4}
+post <- posterior_samples(b5.3_A) %>%
+    mutate(iter = 1:n()) %>% select(-`lp__`) %>%
+    # add 30 different a values for each line
+    expand(nesting(iter, b_m_Intercept, b_m_a, sigma_m, b_d_Intercept,
+                   b_d_a, b_d_m, sigma_d),
+           a = seq(from = -2, to = 2, length.out = 30)) %>%
+    # Simulate m using a normal where the mean and standard deviation come 
+    # from the linear model and estimate for the sd
+    mutate(m_sim = rnorm(n(), mean = b_m_Intercept + b_m_a*a, sd = sigma_m)) %>%
+    # Simulate d using the estimates for m as well
+    mutate(d_sim = rnorm(n(), mean = b_d_Intercept + b_d_a*a + b_d_m * m_sim,
+                         sd = sigma_d)) %>%
+    pivot_longer(ends_with("sim")) %>%
+    group_by(a, name) %>%
+    summarise(mean = mean(value),
+              ll = quantile(value, prob = 0.025),
+              ul = quantile(value, prob = 0.975))
+
+p1 <- post %>% filter(name == "d_sim") %>%
+    ggplot(aes(x = a, y = mean, ymin = ll, ymax = ul)) +
+    geom_smooth(stat = "identity",
+                alpha = 1/5, size = 1/4) +
+    labs(subtitle = "Total counterfactual effect\nof A on D",
+         x = "manipulated A",
+         y = "counterfactual D") 
+    #coord_cartesian(ylim = c(-2, 2))
+
+p2 <- post %>% filter(name == "m_sim") %>%
+    ggplot(aes(x = a, y = mean, ymin = ll, ymax = ul)) +
+    geom_smooth(stat = "identity",
+                alpha = 1/5, size = 1/4) +
+    labs(subtitle = "Counterfactual effect\nof A on M",
+         x = "manipulated A",
+         y = "counterfactual M") 
+
+(p1 | p2 | d1) + plot_layout(widths = c(1,1,0.75))
+```
+
+## What happens when we intervene to change M?
+
+```{r}
+dag_coords <-
+    tibble(name = c("A", "M", "D"),
+           x = c(1, 3, 2),
+           y = c(2, 2, 1))
+
+d4 <- dagify(D ~ A + M,
+       coords = dag_coords) %>%
+    ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_dag_point(size = 10) +
+    geom_dag_text() +
+    geom_dag_edges() +
+    scale_x_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    scale_y_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1))
+```
+
+```{r}
+nd <- tibble(m = seq(from = -2, to = 2, length.out = 30),
+             a = 0)
+
+p1 <- predict(b5.3_A,
+        resp = "d",
+        newdata = nd) %>%
+    data.frame() %>%
+    bind_cols(nd) %>%
+    
+    ggplot(aes(x = m, y = Estimate, ymin = Q2.5, ymax = Q97.5)) +
+    geom_smooth(stat = "identity",
+                alpha = 1/5, size = 1/4) +
+    labs(subtitle = "Total counterfactual effect of M on D",
+         x = "manipulated M",
+         y = "counterfactual D") 
+```
+
+```{r, fig.width = 7, fig.height = 4}
+d4 | p1
+```
+
+## Example 1 summary
+- We can use our prior knowledge to think causally about observational data
+- Using the data we can rule out inconsistent DAGs or reason about the implications
+of different DAGS together with our data and the model
+- Fitting multiple models and considering their implications is far more useful
+than simply trying to find a "best" model
+- Quantifying and conveying the uncertainty about the inference is far more
+important than trying to find some arbitrary statistical significance.
+
+## Does a large brain mean you need more energy content in your milk?
+- Second example: direct influence of multiple variables
+- Two variables correlated with each other but have opposite correlations with 
+the outcome
+- Here we look at the following:
+    - percentage total brain mass that is neocortex (N)
+    - Average female body mass in kg (M) 
+    - kcal per gram in milk (K)
+    
+## Fitting univariate regressions, what do my priors tell me?
+- Fitting the following model
+    - $K_i \sim \text{Normal}(\mu_i, \sigma)$
+    - $\mu_i = \alpha + \beta_N N_i$
+- What to set for priors on $\mu_i$ and $\sigma$?
+```{r show = FALSE}
+library(rethinking)
+data(milk)
+d <- milk
+
+d <-
+    d %>%
+    mutate(kcal.per.g_s = (kcal.per.g - mean(kcal.per.g)) / sd(kcal.per.g),
+           log_mass_s = (log(mass) - mean(log(mass))) / sd(log(mass)),
+           neocortex.perc_s = (neocortex.perc - 
+                                   mean(neocortex.perc, na.rm = T))/
+               sd(neocortex.perc, na.rm = T))
+
+rm(milk)
+detach(package:rethinking, unload = T)
+``` 
+
+
+```{r show = FALSE, warning = FALSE, message = FALSE}
+dcc <-
+    d %>%
+    drop_na(ends_with("_s"))
+
+b5.5_draft <-
+    brm(data = dcc,
+        family = gaussian,
+        kcal.per.g_s ~ 1 + neocortex.perc_s,
+        prior = c(prior(normal(0, 1), class = Intercept),
+                  prior(normal(0, 1), class = b),
+                  prior(exponential(1), class = sigma)),
+        iter = 2000, warmup = 1000, chains = 4, cores = 4,
+        seed = 5,
+        sample_prior = T,
+        file = "chapter5_files/fits/b05.05_draft")
+```
+
+```{r show = FALSE}
+set.seed(5)
+
+p1 <- prior_samples(b5.5_draft) %>%
+    sample_n(size = 50) %>%
+    rownames_to_column() %>%
+    expand(nesting(rowname, Intercept, b),
+           neocortex.perc_s = c(-2, 2)) %>%
+    mutate(kcal.per.g_s = Intercept + b * neocortex.perc_s) %>%
+    
+    ggplot(aes(x = neocortex.perc_s, y = kcal.per.g_s)) +
+    geom_line(aes(group = rowname),
+              alpha = 0.4) +
+    coord_cartesian(ylim = c(-2, 2)) +
+    labs(x = "neocortex percent (std)",
+         y = "kilocal per g (std)",
+         subtitle = "Intercept ~ dnorm(0, 1)\nb ~ dnorm(0, 1)")
+```
+
+```{r show = FALSE, warning = FALSE, message = FALSE}
+b5.5 <-
+    brm(data = dcc,
+        family = gaussian,
+        kcal.per.g_s ~ 1 + neocortex.perc_s,
+        prior = c(prior(normal(0, 0.2), class = Intercept),
+                  prior(normal(0, 0.5), class = b),
+                  prior(exponential(1), class = sigma)),
+        iter = 2000, warmup = 1000, chains = 4, cores = 4,
+        seed = 5,
+        sample_prior = T,
+        file = "chapter5_files/fits/b05.05")
+```
+
+```{r show = FALSE}
+set.seed(5)
+p2 <- prior_samples(b5.5) %>%
+    sample_n(size = 50) %>%
+    rownames_to_column() %>%
+    expand(nesting(rowname, Intercept, b),
+           neocortex.perc_s = c(-2, 2)) %>%
+    mutate(kcal.per.g_s = Intercept + b * neocortex.perc_s) %>%
+    
+    ggplot(aes(x = neocortex.perc_s, y = kcal.per.g_s)) +
+    geom_line(aes(group = rowname),
+              alpha = 0.4) +
+    coord_cartesian(ylim = c(-2, 2)) +
+    labs(x = "neocortex percent (std)",
+         y = "kilocal per g (std)",
+         subtitle = "Intercept ~ dnorm(0, 0.2)\nb ~ dnorm(0, 0.5)")
+```
+
+```{r, fig.width = 7, fig.height = 3}
+p1 | p2
+```
+
+
+## Individual univariate regressions appear to show uncertain association
+
+```{r}
+b5.6 <-
+    brm(data = dcc,
+        family = gaussian,
+        kcal.per.g_s ~ 1 + log_mass_s,
+        prior = c(prior(normal(0, 0.2), class = Intercept),
+                  prior(normal(0, 0.5), class = b),
+                  prior(exponential(1), class = sigma)),
+        iter = 2000, warmup = 1000, chains = 4, cores = 4,
+        seed = 5,
+        sample_prior = T,
+        file = "chapter5_files/fits/b05.06")
+```
+
+```{r, fig.width = 7, fig.height = 4}
+nd <- tibble(neocortex.perc_s = seq(from = -2.5, to = 2, length.out = 30))
+
+p1 <- fitted(b5.5,
+       newdata = nd,
+       probs = c(0.025, 0.975, 0.25, 0.75)) %>%
+    data.frame() %>%
+    bind_cols(nd) %>%
+    
+    ggplot(aes(x = neocortex.perc_s, y = Estimate)) +
+    geom_ribbon(aes(ymin = Q2.5, ymax = Q97.5),
+                alpha = 1/5) +
+    geom_smooth(aes(ymin = Q25, ymax = Q75),
+                stat = "identity",
+                alpha = 1/5, size = 1/2) +
+    geom_point(data = dcc,
+               aes(x = neocortex.perc_s, y = kcal.per.g_s),
+               size = 2) +
+    coord_cartesian(xlim = range(dcc$neocortex.perc_s),
+                    ylim = range(dcc$kcal.per.g_s)) +
+    labs(x = "neocortex percent (std)",
+         y = "kilocal per g (std)")
+
+nd <- tibble(log_mass_s = seq(from = -2.5, to = 2.5, length.out = 30))
+p2 <- fitted(b5.6,
+       newdata = nd,
+       probs = c(0.025, 0.975, 0.25, 0.75)) %>%
+    as_tibble() %>%
+    bind_cols(nd) %>%
+    
+    ggplot(aes(x = log_mass_s, y = Estimate)) +
+    geom_ribbon(aes(ymin = Q2.5, ymax = Q97.5),
+                alpha = 1/5) +
+    geom_smooth(aes(ymin = Q25, ymax = Q75),
+                stat = "identity",
+                alpha = 1/5,
+                size = 1/2) +
+    geom_point(data = dcc,
+               aes(x = log_mass_s, y = kcal.per.g_s),
+               size = 2) +
+    coord_cartesian(xlim = range(dcc$log_mass_s),
+                    ylim = range(dcc$kcal.per.g_s)) +
+    labs(x = "log body mass (std)",
+         y = "kilocal per g (std)") 
+p1 | p2
+```
+
+## Inclusion of both variables strengthens the association of each
+
+```{r}
+b5.7 <-
+    brm(data = dcc,
+        family = gaussian,
+        kcal.per.g_s ~ 1 + neocortex.perc_s + log_mass_s,
+        prior = c(prior(normal(0, 0.2), class = Intercept),
+                  prior(normal(0, 0.5), class = b),
+                  prior(exponential(1), class = sigma)),
+        iter = 2000, warmup = 1000, chains = 4, cores = 4,
+        seed = 5,
+        file = "chapter5_files/fits/b05.07")
+```
+
+```{r, fig.width = 7, fig.height = 4}
+bind_cols(
+    posterior_samples(b5.5) %>%
+        transmute(`N only_beta[N]` = b_neocortex.perc_s),
+    posterior_samples(b5.6) %>%
+        transmute(`M only_beta[M]` = b_log_mass_s),
+    posterior_samples(b5.7) %>%
+        transmute(`Both_beta[N]` = b_neocortex.perc_s,
+                  `Both_beta[M]` = b_log_mass_s)
+) %>%
+    pivot_longer(everything()) %>%
+    group_by(name) %>%
+    summarise(mean = mean(value),
+              ll = quantile(value, prob = 0.025),
+              ul = quantile(value, prob = 0.975)) %>%
+    separate(name, into = c("fit", "parameter"), sep = "_") %>%
+    
+    ggplot(aes(x = mean, y = fit, xmin = ll, xmax = ul)) +
+    geom_pointrange() +
+    geom_hline(yintercept = 0, alpha = 1/5) +
+    ylab(NULL) +
+    labs(x = "Parameter Posterior Value") +
+    facet_wrap(~parameter, ncol = 1, labeller = label_parsed) +
+    geom_vline(xintercept = 0, alpha = 1/5) 
+```
+
+## Counterfactual plots show a strong relationship for each variable
+
+```{r fig.width = 7, fig.height = 4}
+nd <- tibble(neocortex.perc_s = seq(from = -2.5, to = 2, length.out = 30),
+             log_mass_s = 0)
+
+p1 <- fitted(b5.7,
+             newdata = nd,
+             probs = c(0.025, 0.975, 0.25, 0.75)) %>%
+  as_tibble() %>%
+  bind_cols(nd) %>%
+  
+  ggplot(aes(x = neocortex.perc_s, y = Estimate)) +
+  geom_ribbon(aes(ymin = Q2.5, ymax = Q97.5), alpha = 1/5) +
+  geom_smooth(aes(ymin = Q25, ymax = Q75),
+              stat = "identity",
+              alpha = 1/5,
+              size = 1/2) +
+  coord_cartesian(xlim = range(dcc$neocortex.perc_s),
+                  ylim = range(dcc$kcal.per.g_s)) +
+  labs(subtitle = "Counterfactual holding M = 0",
+       x = "neocortex percent (std)",
+       y = "kilocal per g (std)")
+
+nd <- tibble(log_mass_s = seq(from = -2.5, to = 2.5, length.out = 30),
+             neocortex.perc_s = 0)
+
+p2 <-
+  fitted(b5.7,
+         newdata = nd,
+         probs = c(0.025, 0.975, 0.25, 0.75)) %>%
+  as_tibble() %>%
+  bind_cols(nd) %>%
+  
+  ggplot(aes(x = log_mass_s, y = Estimate)) +
+  geom_ribbon(aes(ymin = Q2.5, ymax = Q97.5),
+              alpha = 1/5) +
+  geom_smooth(aes(ymin = Q25, ymax = Q75),
+              stat = "identity",
+              alpha = 1/5, size = 1/2) +
+  coord_cartesian(xlim = range(dcc$log_mass_s),
+                  ylim = range(dcc$kcal.per.g_s)) +
+  labs(subtitle = "Counterfactual holding N = 0",
+       x = "log body mass (std)",
+       y = "kilocal per g (std)")
+
+p1 | p2
+```
+
+## What's going on here? Each variable tends to cancel the other one out
+```{r fig.width =5, fig.height = 3}
+library(GGally)
+
+my_lower <- function(data, mapping, ...) {
+  ggplot(data = data, mapping = mapping) + 
+    geom_smooth(method = "lm", size = 1, 
+                se = F) +
+    geom_point(alpha = .8, size = 1/3)
+  }
+dcc %>%
+    select(ends_with("_s")) %>%
+    ggpairs(lower = list(continuous = my_lower),
+            upper = list(continuous = my_lower))
+```
+
+## What DAGs are consistent with this data?
+```{r, fig.width = 7, fig.height = 3}
+dag_coords <-
+    tibble(name = c("M", "N", "K"),
+           x = c(1, 3, 2),
+           y = c(2, 2, 1))
+
+d1 <- 
+    dagify(N ~ M,
+           K ~ M + N,
+           coords = dag_coords) %>%
+    ggdag() + 
+    scale_x_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    scale_y_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    theme(panel.grid = element_blank())
+
+d2 <-
+    dagify(M ~ N,
+           K ~ M + N,
+           coords = dag_coords) %>%
+    ggdag() + 
+    scale_x_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    scale_y_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    theme(panel.grid = element_blank())
+
+dag_coords <-
+    tibble(name = c("M", "N", "K", "U"),
+           x = c(1, 3, 2, 2),
+           y = c(2, 2, 1, 2))
+
+d3 <-
+    dagify(M ~ U,
+           N ~ U,
+           K ~ M + N,
+           coords = dag_coords) %>%
+    ggdag() +
+    scale_x_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    scale_y_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    theme(panel.grid = element_blank())
+
+d1 + d2 + d3 
+```
+- Which graph is right?
+    - We can't know from the data alone
+    - These each imply the same set of conditional independencies
+    
+    
+## Markov equivalence: DAGs that will all look the same from data alone
+- "While the data alone can never tell you which causal model is correct,
+    your scientific knowledge of the variables will eliminate a large number of
+    silly but Markov equivalent, DAGs".
+
+```{r}
+dag5.7 <- dagitty("dag{M -> K <- N M -> N}")
+
+coordinates(dag5.7) <- list(x = c(M = 0, K = 1, N = 2),
+                            y = c(M = 0.5, K = 1, N = 0.5))
+```
+
+```{r, fig.width = 7, fig.height = 3}
+ggdag_equivalent_dags(dag5.7) +
+    scale_x_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    scale_y_continuous(NULL, breaks = NULL, expand = c(0.1, 0.1)) +
+    theme(panel.grid = element_blank())
+```
+
+## Example 2 summary
+- Causal inference requires you to have knowledge outside of the data you are
+using
+- Your data __cannot__ tell if your DAG is "right" but it can allow you to see
+if the data is consistent with a given DAG
+- Multiple regression allows for you to account for associations between variables and can "unmask" hidden associations
+- This chain of reasoning should all be very familiar to us as experimentalists. DAGs can help you decide what the next most effective controlled experiment will be
+given information from observational data.
+
+## A look ahead
+- Next chapter will dive deeper into DAGs 
+- Look at common statistical weirdness that shows up
+    - Collider bias
+    - Simpson's paradox
+    - Different common ways things get confounded
+- All unified together with regression and DAGs
+- "However, it is possible to reach valid causal inferences in the absence of
+experiments. This is good news, because we often cannot perform experiments,
+both for practical and ethical reasons."
