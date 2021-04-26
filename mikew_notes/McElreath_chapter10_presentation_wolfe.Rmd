@@ -1,0 +1,528 @@
+---
+title: 'McElreath Chapter 10: Big Entropy and the Generalized Linear Model'
+author: "Mike Wolfe"
+date: "4/25/2021"
+output: 
+    beamer_presentation:
+classoption: "aspectratio=169"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, show = FALSE, warning = FALSE)
+library(tidyverse)
+library(patchwork)
+theme_set(theme_bw())
+# Note that most code examples in this presentation come from Solomon Kurz https://bookdown.org/content/4857/big-entropy-and-the-generalized-linear-model.html
+```
+
+## Distributional choices in Bayesian statistical models
+* Prior - for each parameter what information do we have about it and how do we
+describe it's uncertainty?
+* Likelihood - how is the data distributed? What is the data generating process?
+* So far we have been choosing Gaussian distributions for both the likelihood
+and priors through convential linear regression.
+* But we don't have to be limited to these conventional choices
+* How do we choose?
+    * Part 1 - Maximum Entropy as a guiding principle
+    * Part 2 - Putting together models with different distributions
+
+## Looking briefly ahead
+* This chapter serves as a foundation for upcoming chapters
+    * Chapter 11 - models for count variables (**SEQUENCING DATA**)
+    * Chapter 12 - complicated models such as ordinal outcomes and mixtures (**Also SEQUENCING DATA**)
+    * Chapter 13 - moving into multilevel models (**Where the real fun starts**)
+
+## Information entropy
+* Talked about this in chapter 6 but want a measure that satisfies 3 criteria:
+    * Measure should be continuous
+    * It should increase if there are more possible events
+    * It should be additive
+* Information entropy $H(p)$ satisfies these criteria for a distribution $p$
+where $p_i$ is the probability of event $i$.
+
+\begin{center}
+$H(p) = - \sum_i p_i \log{p_i}$
+\end{center}
+
+## Maximum entropy
+* Use this measure to choose a probability distriubtion
+
+> The distribution that can happen the most ways is also the distribution 
+> with the biggest information entropy. The distribution with the biggest 
+> entropy is the most conservative distribution that obeys its constraints.
+
+* Consider 10 pebbles randomly thrown into 5 buckets with an equal probability of a pebble landing in each bucket.
+
+## Maximum Entropy - Pebbles in buckets (Uniform Distribution)
+
+```{r, show=FALSE, fig.height = 4, fig.width = 7}
+d <-
+    tibble(A = c(0, 0, 10, 0, 0),
+           B = c(0, 1, 8, 1, 0),
+           C = c(0, 2, 6, 2, 0),
+           D = c(1, 2, 4, 2, 1),
+           E = 2)
+
+d %>%
+   mutate(bucket = 1:5) %>%
+    pivot_longer(-bucket, 
+                 names_to = "letter",
+                 values_to = "pebbles") %>%
+    ggplot(aes(x = bucket, y = pebbles)) +
+    geom_col(width = 1/5) +
+    geom_text(aes(y = pebbles + 1, label = pebbles)) +
+    geom_text(data = tibble(
+        letter = toupper(letters[1:5]),
+        bucket = 5.5,
+        pebbles = 10.5,
+        label = str_c(c(1, 90, 1260, 37800, 113400),
+                      rep(c(" way", " ways"), times = c(1, 4)))),
+        aes(label = label),
+        hjust = 1) +
+    scale_y_continuous(breaks = c(0, 5, 10), limits = c(0, 12)) +
+    facet_wrap(~ letter, ncol = 2) +
+    labs(x = "Bucket #", y = "# of pebbles")
+```
+
+## Which scenario has maximum entropy?
+
+```{r, fig.height = 4, fig.width = 7}
+d %>%
+    # convert to probability from count
+    mutate_all(~ . / sum(.)) %>%
+    pivot_longer(everything()) %>%
+    group_by(name) %>%
+    # get the entropy of each distribution
+    summarize(h = -sum(ifelse(value == 0, 0, value * log(value)))) %>%
+    # add the number of ways each distribution can be realized
+     mutate(n_ways = c(1, 90, 1260, 37800, 113400)) %>%
+     group_by(name) %>%
+    mutate(log_ways = log(n_ways)/10,
+           text_y = ifelse(name < "c", h + .15, h - .15)) %>%
+    
+    ggplot(aes(x = log_ways, y = h)) +
+    geom_smooth(method = "lm", se = FALSE) +
+    geom_point(size = 2.5) +
+    geom_text(aes(y = text_y, label = name)) +
+    labs(x = "log(ways) per pebble",
+         y = "entropy")
+```
+> [The maximum entropy distribution's] high plausibility is conditional of our assumptions, of course.
+
+## Maximum Entropy - the Gaussian distribution
+* Previously, we talked about getting a Gaussian when you add up a bunch of
+small fluctuations
+* 100 people taking 16 steps by flipping a coin at each step
+
+```{r, fig.height = 3, fig.width = 7}
+set.seed(42)
+
+pos <-
+    # 100 people, 16 steps each with 0 starting point
+    crossing(person = 1:1000,
+             step = 0:16) %>%
+        # calculate the deviation by moving a random amount between -1 and 1
+        # for each step. The zero step we want to keep at 0
+        mutate(deviation = 
+                   map_dbl(step, ~if_else(. == 0, 0, runif(1, -1, 1)))) %>%
+        # group together by each person and sum up the steps (it is already
+        # sorted by step number due to the crossing call)
+        group_by(person) %>%
+        mutate(position = cumsum(deviation)) %>%
+        ungroup()
+
+top_plot <- pos %>% filter(person <= 100) %>%
+    ggplot(aes(x = step, y = position, group = person)) +
+    geom_vline(xintercept = c(4, 8, 16), linetype = "dashed") +
+    geom_line(aes(color = person < 2, alpha = person < 2)) +
+    scale_color_manual(values = c("skyblue4", "black")) +
+    scale_alpha_manual(values = c(1/5, 1)) +
+    scale_x_continuous("step number", breaks = c(0, 4, 8, 12, 16)) +
+    theme(legend.position = "none") + 
+    geom_hline(yintercept = 0, linetype = "dashed")
+
+bottom_l <- pos %>% 
+        filter(step == 4) %>%
+        ggplot(aes(x = position)) +
+        geom_line(stat = "density", color = "dodgerblue1") +
+        labs(title = "4 steps")
+
+bottom_m <- pos %>%
+    filter(step == 8) %>%
+    ggplot(aes(x = position)) +
+    geom_line(color = "dodgerblue1", stat = "density") +
+    labs(title = "8 steps")
+
+bottom_r <- pos %>%
+    filter(step == 16) %>%
+    ggplot(aes(x = position)) + 
+    stat_function(fun = dnorm,
+                  args = list(mean = 0, 
+                              sd = pos %>% 
+                                  filter(step == 16) %>%
+                                  summarise(sd = sd(position)) %>%
+                                  pull(sd))) +
+    geom_line(color = "dodgerblue1", stat = "density") +
+    labs(title = "16 steps",
+         y = "density")
+
+(top_plot / 
+        (
+            (bottom_l | bottom_m | bottom_r) & coord_cartesian(xlim = c(-6, 6))
+            )
+    )
+```
+
+## Maximum Entropy - Gaussian
+* Why does the distribution show up so much?
+* If all we know about some continuous values is that they have finite variance,
+the most likely distribution is a bell shaped one.
+* The Gaussian distribution is not the only bell-shaped distribution. We can
+consider several different bell-shaped functions at the same known variance.
+
+\begin{center}
+$\text{Pr}(y | \mu, \alpha, \beta) = \frac{\beta}{2\alpha\Gamma(1/\beta)}e^{-(\frac{| y - \mu |}{\mu})^{\beta}}$
+\end{center}
+
+* We will consider different distributions when $\sigma^2 = 1$.
+* Need to determine the relationship between $\sigma$ and $\alpha, \beta$ to
+
+$$
+\begin{aligned}
+\sigma^2 = \frac{\alpha^2\Gamma(3/\beta)}{\Gamma(1/\beta)} \\
+\alpha = \sqrt{\frac{\sigma^2\Gamma(1/\beta)}{\Gamma(3/\beta)}}
+\end{aligned}
+$$
+
+## Maximum Entropy - Which bell-shaped curve?
+
+```{r}
+alpha_per_beta <- function(beta, variance = 1) {
+    sqrt((variance * gamma(1/beta)) / gamma(3 / beta))
+}
+
+generalized_beta_density <-function(value, mu, alpha, beta){
+    (beta / (2*alpha * gamma(1/beta))) *
+        exp((-1 * (abs(value - mu)/ alpha) ^ beta))
+}
+```
+
+```{r, fig.height = 3, fig.width = 7}
+var <- 1
+p1 <- crossing(value = seq(from = -4, to = 4, by = 0.1),
+         beta = c(1, 1.5, 2, 4)) %>%
+    mutate(mu = 0,
+           alpha = alpha_per_beta(beta, var)) %>%
+    mutate(density = generalized_beta_density(value, mu, alpha, beta)) %>%
+    ggplot(aes(x = value, y = density, group = beta)) +
+    geom_line(aes(color = as.factor(beta))) +
+    coord_cartesian(xlim = c(-4, 4)) +
+    labs(title = "sigma^2 = 1",
+         color = "Beta", x = "", y = "")
+var <- 4
+p2 <- crossing(value = seq(from = -4, to = 4, by = 0.1),
+         beta = c(1, 1.5, 2, 4)) %>%
+    mutate(mu = 0,
+           alpha = alpha_per_beta(beta, var)) %>%
+    mutate(density = generalized_beta_density(value, mu, alpha, beta)) %>%
+    ggplot(aes(x = value, y = density, group = beta)) +
+    geom_line(aes(color = as.factor(beta))) +
+    coord_cartesian(xlim = c(-4, 4)) +
+    labs(title = "sigma^2 = 4",
+         color = "Beta", x = "", y = "")
+
+p3 <-
+    crossing(value = -8:8,
+             beta = seq(from = 1, to = 4, length.out = 100)) %>%
+    mutate(mu = 0,
+           alpha = alpha_per_beta(beta, var = 1)) %>%
+    mutate(density = generalized_beta_density(value, mu, alpha, beta)) %>%
+    group_by(beta) %>%
+    summarize(entropy = -sum(density * log(density))) %>%
+    ggplot(aes(x = beta, y = entropy)) +
+    geom_vline(xintercept = 2, linetype = "dashed") +
+    geom_line() +
+    labs(x = "Beta", y = "Entropy") #+
+    #coord_cartesian(ylim = c(1.34, 1.42))
+
+p1 + p3
+    
+```
+
+> ...the Gaussian distribution gets its shape by being as spread
+> out as possible for a distribution with fixed variance.
+
+## Maximum entropy- binomial distribution
+* What if we have simple count data?
+* Binomial distribution
+    * Only two things can happen
+    * There is a constant chance $p$ across $n$ trials of seeing event $y$
+* This is the maximum entropy distribution for the following conditions:
+    * Two unordered events
+    * A constant expected value
+* Consider the scenario
+    * Bag with blue and white marbles of unknown quantity
+    * Drawing two marbles
+    * We know expected number of blue marbles of two draws is exactly 1
+
+## Maximum entropy - binomial marbles simple
+* We want to find the distribution with the highest entropy over four possible outcomes: ww, bw, wb, bb.
+* Consider the following four distributions with the same expected value of 1 blue marble in two draws
+
+```{r, fig.height = 3, fig.width = 7}
+d <- 
+    tibble(distribution = toupper(letters[1:4]),
+           ww = c(1/4, 2/6, 1/6, 1/8),
+           bw = c(1/4, 1/6, 2/6, 4/8),
+           wb = c(1/4, 1/6, 2/6, 2/8),
+           bb = c(1/4, 2/6, 1/6, 1/8)) %>%
+    pivot_longer(-distribution,
+                 names_to = "sequence",
+                 values_to = "probability") %>%
+    mutate(sequence = factor(sequence, 
+                             levels = c("ww", "bw", "wb", "bb")))
+p1 <- d %>%
+    ggplot(aes(x = sequence, y = probability, group = 1)) +
+    geom_point(size = 2) +
+    geom_line() +
+    labs(x = NULL, y = NULL) +
+    coord_cartesian(ylim = 0:1) +
+    facet_wrap(~distribution)
+
+p2 <- d %>% group_by(distribution) %>%
+    summarise(entropy = -sum(probability * log(probability))) %>%
+    ggplot(aes(x = distribution, y = entropy)) + geom_col()
+
+p1 + p2
+```
+
+
+## Maximum Entropy - binomial marbles complex
+* What if instead we made the constraint that the expected value be 1.4 blue marbles in 2 draws? (i.e. p = 0.7 or 7 blue marbles and 3 white marbles)
+
+```{r}
+sim_p <- function(seed, g = 1.4) {
+    
+    set.seed(seed)
+    
+    x_123 <- runif(3)
+    x_4 <- ((g) * sum(x_123) - x_123[2] - x_123[3]) / (2 - g)
+    z <- sum(c(x_123, x_4))
+    p <- c(x_123, x_4) / z
+    
+    tibble(h = -sum(p * log(p)),
+           p = p,
+           key = factor(c("ww", "bw", "wb", "bb"),
+                        levels = c("ww", "bw", "wb", "bb")))
+}
+```
+
+```{r, cache=TRUE}
+n_rep <- 1e5
+
+d <-
+    tibble(seed = 1:n_rep) %>%
+    mutate(sim = map2(seed, 1.4, sim_p)) %>%
+    unnest(sim) %>%
+    group_by(seed) %>%
+    arrange(desc(h)) %>%
+    ungroup() %>%
+    mutate(rank = rep(1:n_rep, each = 4))
+```
+
+```{r}
+subset_d <-
+    d %>%
+    filter(rank %in% c(1, 87373, n_rep - 1500, n_rep -10)) %>%
+    mutate(height = rep(c(8, 2.25, 0.75, 0.5), each = 4),
+           distribution = rep(LETTERS[1:4], each = 4))
+```
+
+```{r, fig.height = 2.5, fig.width = 7}
+p1 <-
+    d %>%
+    ggplot(aes(x = h)) +
+    geom_density(adjust = 1/4, fill = "darkblue", size = 0) +
+    geom_linerange(data = subset_d %>% group_by(seed) %>% slice(1),
+                   aes(ymin = 0, ymax = height)) +
+    geom_text(data = subset_d %>% group_by(seed) %>% slice(1),
+              aes(y = height + 0.5, label = distribution)) +
+    scale_x_continuous("Entropy", breaks = seq(from = 0.7, to = 1.2, by = 0.1))
+
+p2 <-
+    d %>%
+    filter(rank %in% c(1, 87373, n_rep - 1500, n_rep -10)) %>%
+    mutate(distribution = rep(LETTERS[1:4], each = 4)) %>%
+    
+    ggplot(aes(x = key, y = p, group = 1)) +
+    geom_line() +
+    geom_point(size = 2) +
+    scale_y_continuous(limits = c(0, 0.75)) +
+    labs(x = "", y = "") +
+    facet_wrap(~distribution)
+
+p1 | p2
+```
+
+> If only two un-ordered outcomes are possible and you think the process
+> generating them is invariant in time,
+> then the distribution that is the most conservative is the binomial.
+
+
+## Generalized Linear Models
+* So far we have been focusing on linear regression using Gaussian distributions
+* Linear regression will make ridiculous predictions on bounded variables
+* What if we want to use some of these other distributions we have been talking about?
+
+## Generalized Linear Models
+* The key to GLMs is that you have models like this:
+
+$$
+\begin{aligned}
+y_i \sim \text{Binomial}(n, p_i) \\
+f(p_i) = \alpha + \beta(x_i - \bar{x})
+\end{aligned}
+$$
+* Two changes to note:
+    * Likelihood is now a binomial instead of Gaussian
+    * Now contains a link function, $f(p_i)$ in this example.
+* Need a link function since the parameter $p$ is not unbounded in both directions
+
+## Exponential family of likelihood functions
+* Every member is a maximum likelihood function for some constraints
+* We have already talked about
+    * Gaussian distribution (linear regression)
+    * Binomial distribution (logisitic regression - next chapter)
+* However, we have some new distributions:
+    * **Exponential** - Used for distance and duration. If prob of an event is
+    constant in time or space. Maximum entropy among all non-negative
+    distributions with the same average displacement
+    * **Gamma** - Similar to exponential but can have peak above zero. Waiting 
+    times between to exponentially distributed events. Maximum entropy among all
+    distributions with the same mean and same average logarithm
+    * **Poisson** - Binomial when n is large and p is small. Maximum entropy under
+    the same constraints as binomial
+    
+## Linking linear models and distributions using the link function
+* Link functions allow you to convert from linear space to the non-linear space
+of a parameter
+* Example, the binomial distribution can use a logit function
+$$
+\begin{aligned}
+y_i \sim \text{Binomial}(n, p_i) \\
+\text{logit}(p_i) = \alpha + \beta x_i\\
+\end{aligned}
+$$
+* Where logit function defines the log-odds
+$$
+\text{logit}(p_i) = \log{\frac{p_i}{1-p_i}}
+$$
+* And $p_i$ is therefore described with the logistic function or inverse-logit
+$$
+p_i = \frac{\exp(\alpha + \beta x_i)}{1 + \exp(\alpha + \beta x_i)}
+$$
+
+## Logit link function
+
+```{r, fig.height = 3, fig.width = 7}
+# data for horizontal lines
+alpha <- 0
+beta <- 4
+
+lines <-
+    tibble(x = seq(from = -1.5, to = 1.5, by = 0.25)) %>%
+    mutate(`log-odds` = alpha + x * beta,
+           probability = exp(alpha + x * beta) / (1 + exp(alpha + x * beta)))
+
+# data for the actual data
+beta <- 2
+
+d <-
+    tibble(x = seq(from = -3, to = 3, length.out = 50)) %>%
+    mutate(`log-odds` = alpha + x*beta,
+           probability = exp(alpha + x * beta) / (1 + exp(alpha + x * beta)))
+
+p1 <- d %>%
+    ggplot(aes(x = x, y = `log-odds`)) +
+    geom_hline(data = lines,
+               aes(yintercept = `log-odds`)) +
+    geom_line(size = 1.5) +
+    coord_cartesian(xlim = c(-2, 2))
+
+p2 <-
+    d %>%
+    ggplot(aes(x = x, y = probability)) +
+    geom_hline(data = lines,
+               aes(yintercept = probability)) +
+    geom_line(size = 1.5) +
+    coord_cartesian(xlim = c(-2, 2)) 
+p1 | p2
+```
+
+> The key lesson now is just that no regression coefficient, such as $beta$
+> from a GLM ever produces a constant change on the outcome scale.
+
+## Log link function
+* An example, parameter that only maps onto positive reals:
+$$
+\begin{aligned}
+y_i \sim \text{Normal}(\mu, \sigma_i) \\
+\log(\sigma_i) = \alpha + \beta x_i
+\end{aligned}
+$$
+* The inverse link is the following
+$$
+\sigma_i = \exp(\alpha + \beta x_i)
+$$
+
+
+## Log link function
+```{r, fig.height = 3, fig.width = 7}
+alpha <- 0
+beta <- 2
+
+lines <- 
+    tibble(`log-measurement` = -3:3,
+           `original measurement` = exp(-3:3))
+
+d <-
+    tibble(x = seq(from = -1.5, to = 1.5, length.out = 50)) %>%
+    mutate(`log-measurement` = alpha + x * beta,
+           `original measurement` = exp(alpha + x * beta))
+
+p1 <-
+    d %>%
+    ggplot(aes(x = x, y = `log-measurement`)) +
+    geom_hline(data = lines,
+               aes(yintercept = `log-measurement`)) +
+    geom_line(size = 1.5) +
+    coord_cartesian(xlim = c(-1, 1)) 
+
+p2 <-
+    d %>%
+    ggplot(aes(x = x, y = `original measurement`)) +
+    geom_hline(data = lines,
+               aes(yintercept = `original measurement`)) +
+    geom_line(size = 1.5) +
+    scale_y_continuous(position = "right", limits = c(0, 10)) +
+    coord_cartesian(xlim = c(-1, 1))
+
+p1 | p2
+```
+
+> Using a log link implies an exponential scaling of the outcome with the predictor variable
+
+## GLMs odds and ends
+* Omitted variable bias can be a huge issue with GLMs due to the relative effects of the estimates
+* Big coefficients don't mean big changes on the outcome scale. Coefficients are giving you relative changes
+* Information criteria can only be used on models with the same likelihood function. Don't compare a logistic regression to a linear regression using information criteria
+* You can use maximum entropy principles to choose priors as well
+
+## Summary and looking ahead
+* Maximum entropy principles can help you choose distributions.
+* Most commonly used distributions are maximimum entropy for some known constraint
+* GLMs let you used distributions other than Gaussian distributions for your likelihood function
+* GLMs require a link function that results in the outcome not scaling linearly with the predictors
+* Caution must be used when interpreting coefficients as they live on a relative and not absolute scale
+* Next McElreath Chapter will focus on models for count data led by Jeremy
+* Next Neidhardt Chapter will be Chapter 14 led by Yulduz.
