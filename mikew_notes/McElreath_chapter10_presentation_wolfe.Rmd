@@ -86,7 +86,7 @@ d %>%
 
 ## Which scenario has maximum entropy?
 
-```{r, fig.height = 4, fig.width = 7}
+```{r, fig.height = 3, fig.width = 7}
 d %>%
     # convert to probability from count
     mutate_all(~ . / sum(.)) %>%
@@ -107,7 +107,9 @@ d %>%
     labs(x = "log(ways) per pebble",
          y = "entropy")
 ```
-> [The maximum entropy distribution's] high plausibility is conditional of our assumptions, of course.
+
+> [The maximum entropy distribution's] high plausibility 
+> is conditional of our assumptions, of course.
 
 ## Maximum Entropy - the Gaussian distribution
 * Previously, we talked about getting a Gaussian when you add up a bunch of

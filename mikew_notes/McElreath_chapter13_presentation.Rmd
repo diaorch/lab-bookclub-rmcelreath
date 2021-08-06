@@ -1,0 +1,604 @@
+---
+title: 'McElreath Chapter 13: Models with Memory'
+author: "Mike Wolfe"
+date: "08/05/2021"
+output: 
+    beamer_presentation:
+classoption: "aspectratio=169"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, show = FALSE, warning = FALSE)
+library(tidyverse)
+library(patchwork)
+theme_set(theme_bw())
+# Note that most code examples in this presentation come from Solomon Kurz https://bookdown.org/content/4857/big-entropy-and-the-generalized-linear-model.html
+```
+
+## A motivating example - Cafe waiting times
+
+* You want to estimate how much time you have to wait for your coffee at any
+given cafe in the city
+* Let's say you start with a vague Gaussian prior of $\mu = 5$ min and $\sigma = 1$ min
+* You visit a cafe and get your coffee in 4 minutes, which you use to update your expectations
+* You then visit a second cafe. What to use as your prior?
+    * Could use the posterior after the second cafe, but assumes that this cafe
+    has the same average waiting time
+* We don't want to assume that all cafes are exactly the same
+* We also don't want to completely ignore the information about waiting times from the first cafe
+* How can we do better?
+
+## Multilevel models 
+
+* Instead let's try to estimate the overall average of waiting times as well as
+the variation between cafes
+* We will use this distributional information to inform our individual cafe estimates
+* This allows us to **pool** information between cafes without assuming they are all the same
+* Benefits
+    * Improved estimates for repeat sampling
+    * Improved estimates for imbalanced sampling
+    * **Explicit Estimates of variation** between groups
+    * Avoidance of averaging to preserve variation
+
+## A colony counting example
+
+```{r echo=FALSE, out.width='100%'}
+knitr::include_graphics('./gfp_experiment.png')
+```
+
+## Estimating recombination efficiency - No pooling
+
+* First we are going to treat every targeted gene as it's own unique case
+* This is a straight forward application of the models we learned for count data
+* No pooling of information between genes will be used here
+* We will fit a simple binomial model with an intercept for each gene:
+
+$$
+\begin{aligned}
+\text{gfp}_i \sim \text{Binomial}(n_i, p_i) \\
+\text{logit}(p_i) = \alpha_{gene[i]} \\
+\alpha_j \sim \text{Normal}(0, 1.5)
+\end{aligned}
+$$
+
+
+## Estimating recombination efficiency - No pooling
+
+```{r}
+library(brms)
+data(reedfrogs, package = "rethinking")
+d <- reedfrogs
+rm(reedfrogs)
+```
+
+```{r}
+d <- d %>%
+    mutate(gene = 1:nrow(d))
+```
+
+```{r}
+b13.1 <-
+    brm(data = d,
+        family = binomial,
+        surv | trials(density) ~ 0 + factor(gene),
+        prior(normal(0, 1.5), class = b),
+        iter = 2000, warmup = 1000, chains = 4, cores = 4,
+        seed = 13,
+        file = "chapter13_files/b13.01")
+```
+
+```{r, fig.width = 7, fig.height = 3}
+(no_pool <- as.tibble(fixef(b13.1, robust = T)) %>%
+    mutate(gene = 1:48, density = d$density,
+           empirical = d$propsurv) %>% 
+    mutate(p = inv_logit_scaled(Estimate),
+           p_Q2.5 = inv_logit_scaled(Q2.5),
+           p_Q97.5 = inv_logit_scaled(Q97.5),
+           model = "no pooling")) %>% 
+    mutate(gene = fct_reorder(as.factor(gene), p)) %>%
+     ggplot(aes(x = gene, y = p, color = as.factor(density))) + geom_point() +
+    geom_point(aes(y = empirical), color = "black", shape = 1) +
+     geom_errorbar(aes(max = p_Q97.5, ymin = p_Q2.5)) +
+    labs(title = "Gene level estimates with no pooling",
+         subtitle = "Posterior median + 95% CI; Empirical ratio in black",
+         y = "Estimated recombination efficiency",
+         x = "Gene ordered by estimate average", color = "# of colonies\ncounted") +
+    theme(panel.grid.major.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank()) 
+```
+
+
+## Estimating recombination efficiency - Partial pooling
+
+* Now we want to use a multilevel model to allow for **partial pooling**
+* In other words, we want the information about one gene help us inform our
+estimate about another gene
+* The easiest way to do this is to treat the $\alpha_{\text{gene}[i]}$ estimates
+as normally distributed with some overall average $\bar{\alpha}$ and standard
+deviation as $\sigma$.
+* We will then simultaneous learn each estimate $\alpha_{\text{gene}[i]}$ and
+the overall population-level estimates $\bar{\alpha}$ and $\sigma$ from the data.
+* The model looks like this
+
+$$
+\begin{aligned}
+\text{gfp}_i \sim \text{Binomial}(N_i, p_i) \\
+\text{logit}(p_i) = \alpha_{\text{gene}[i]} \\
+\alpha_j \sim \text{Normal}(\bar{\alpha}, \sigma) \\
+\bar{\alpha} \sim \text{Normal}(0, 1.5) \\
+\sigma \sim \text{Exponential}(1)
+\end{aligned}
+$$
+
+* Where $\bar\alpha$ and $\sigma$ are **hyperparameters** and their priors are **hyperpriors**
+
+## Estimating recombination efficiency - Partial pooling
+
+```{r}
+b13.2 <-
+    brm(data = d,
+        family = binomial,
+        surv | trials(density) ~ 1 + (1 | gene),
+        prior = c(prior(normal(0, 1.5), class = Intercept),
+                  prior(exponential(1), class = sd)),
+        iter = 5000, warmup = 1000, chains = 4, cores = 4,
+        sample_prior = "yes",
+        seed = 13,
+        file = "chapter13_files/b13.02")
+```
+
+
+```{r, fig.width = 7, fig.height = 3}
+post <- posterior_samples(b13.2)
+
+(ppool <- as.tibble(coef(b13.2, robust = T)$gene[, , ]) %>%
+    mutate(gene = 1:48, density = d$density) %>% 
+    mutate(p = inv_logit_scaled(Estimate),
+           p_Q2.5 = inv_logit_scaled(Q2.5),
+           p_Q97.5 = inv_logit_scaled(Q97.5),
+           empirical = d$propsurv) %>%
+     mutate(model = "partial pooling")) %>% 
+    bind_rows(no_pool) %>% 
+    mutate(gene = fct_reorder(as.factor(gene), p, .fun = mean)) %>%
+     ggplot(aes(x = gene, y = p, color = as.factor(density))) + 
+    geom_point(aes(shape = model)) +
+    geom_point(aes(y = empirical), color = "black", shape = 1) +
+    geom_line() + 
+    geom_hline(yintercept = inv_logit_scaled(median(post$b_Intercept)), linetype =2,
+               size = 1/4) + 
+    geom_hline(yintercept = median(d$propsurv), size = 1/4) + 
+    labs(title = "Gene level estimates comparisons",
+         subtitle = "Posterior median; Empirical ratio in black",
+         y = "Estimated recombination efficiency",
+         x = "Gene ordered by estimate average", color = "# of colonies\ncounted",
+         shape = "Model type") +
+    annotate(geom = "text",
+             x = c(9,9), y = c(0.75,0.95), 
+             label = c("Modeled gene median",
+                       "Empirical gene median")) +
+    theme(panel.grid.major.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank())
+```
+
+* Here partial pooling moves the estimates towards the learned average estimate relative to the
+empirical ratio
+* However, compared to the simpler model with no pooling, some uncertain high estimates
+are enabled to move closer to their empirical estimates
+
+## Thinking about and interpreting the hyperparameters
+
+* We can use the posterior distribution of the hyperparameters to reason about
+what to expect when targeting a future gene
+* The advantage of the multilevel model is that we aren't assuming every gene 
+is the same, rather, we are **explicity** modeling the variation between genes
+
+```{r, fig.width = 7, fig.height = 3}
+set.seed(13)
+
+p1 <- 
+    post %>%
+    mutate(iter = 1:n()) %>%
+    slice_sample(n = 100) %>%
+    expand(nesting(iter, b_Intercept, sd_gene__Intercept),
+           x = seq(from= -4, to = 5, length.out = 100)) %>%
+    mutate(density = dnorm(x, mean = b_Intercept, sd = sd_gene__Intercept)) %>%
+    ggplot(aes(x = x, y = density, group = iter)) +
+    geom_line(alpha = 0.2) +
+    geom_vline(xintercept = 0, linetype = 2) +
+    scale_y_continuous(NULL, breaks = NULL) +
+    labs(title = "Posterior hyperparameter distributions",
+         x = "Log-odds") +
+    coord_cartesian(xlim = c(-3, 4))
+
+p2 <- 
+    post %>%
+    slice_sample(n = 8000, replace = T) %>%
+    mutate(sim_genes = rnorm(n(), mean = b_Intercept, sd = sd_gene__Intercept)) %>%
+    ggplot(aes(x = inv_logit_scaled(sim_genes))) +
+    geom_density(size = 0, adjust = 0.1, fill = "black") +
+    geom_vline(xintercept = 0.5, linetype = 2) + 
+    scale_y_continuous(NULL, breaks = NULL) +
+    labs(title = "8000 simulated genes",
+         x = "Recombination efficiency")
+
+(p1 + p2)
+```
+
+## Do multilevel models really help that much?
+
+* Simulate data where we know what the ground truth is
+* Compare three different approaches to estimate the true parameters
+    * **Complete pooling** - every gene is identical. Estimate one intercept
+    * **No pooling** - every gene is different. Estimate each intercept seperately
+    * **Partial pooling** - genes are different but knowing something about one tells
+    you something about the other. Use the adaptive regularization learned from the data
+* We are going to simulate data from a model identical to the one we used before
+
+$$
+\begin{aligned}
+\text{gfp}_i \sim \text{Binomial}(N_i, p_i) \\
+\text{logit}(p_i) = \alpha_{\text{gene}[i]} \\
+\alpha_j \sim \text{Normal}(\bar{\alpha}, \sigma) \\
+\bar{\alpha} \sim \text{Normal}(0, 1.5) \\
+\sigma \sim \text{Exponential}(1)
+\end{aligned}
+$$
+
+
+## Multilevel models improve estimates on average
+
+```{r}
+a_bar <- 1.5
+sigma <- 1.5
+n_genes <- 60
+
+set.seed(5005)
+
+dsim <-
+    tibble(gene = 1:n_genes,
+           ni = rep(c(5, 10, 25, 35), each = n_genes / 4) %>% as.integer(),
+           true_a = rnorm(n = n_genes, mean = a_bar, sd = sigma))
+
+```
+
+
+```{r}
+set.seed(5005)
+dsim <-
+    dsim %>%
+    mutate(gfpi = rbinom(n = n(), prob = inv_logit_scaled(true_a), size = ni))
+```
+
+
+```{r}
+dsim <-
+    dsim %>%
+    mutate(p_nopool = gfpi/ ni)
+```
+
+
+```{r}
+b13.3 <-
+    brm(data = dsim,
+        family = binomial,
+        gfpi | trials(ni) ~ 1 + (1 | gene),
+        prior = c(prior(normal(0, 1.5), class = Intercept),
+                  prior(exponential(1), class = sd)),
+        iter = 2000, warmup = 1000, chains = 4, cores = 4,
+        seed = 13,
+        file = "chapter13_files/b13.03")
+```
+
+
+```{r, fig.width = 7, fig.height = 3}
+p_partpool <-
+    coef(b13.3)$gene[, , ] %>%
+    data.frame() %>%
+    transmute(p_partpool = inv_logit_scaled(Estimate))
+
+p_pooled <- sum(dsim$gfpi)/sum(dsim$ni)
+post <- posterior_samples(b13.3)
+dsim %>%
+    bind_cols(p_partpool) %>%
+    mutate(p_true = inv_logit_scaled(true_a)) %>%
+    pivot_longer(p_nopool:p_partpool, names_to = "model", values_to = "estimate") %>%
+    mutate(gene = fct_reorder(as.factor(gene), p_true)) %>%
+    ggplot(aes(x = gene, y = estimate, color = as.factor(ni), shape = model)) + 
+    geom_line(aes(group = gene)) +
+    geom_hline(yintercept = inv_logit_scaled(median(post$b_Intercept)), linetype =2,
+               size = 1/4) + 
+    geom_hline(yintercept = p_pooled, linetype = 1,
+               size = 1/4) +
+    geom_hline(yintercept = inv_logit_scaled(1.5), linetype = 2,
+               size = 1/4, color = "red") +
+    geom_point() +
+    geom_point(aes(y= p_true), color = "black", shape = 1) +
+    theme(panel.grid.major.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank()) +
+    annotate(geom = "text",
+             x = c(10,10), y = c(0.85,0.73), 
+             label = c("Modeled gene median",
+                       "Pooled Estimate")) +
+    labs(title = "Gene level estimates comparisons",
+         subtitle = "Posterior median; True value in black; Red line true alpha_bar",
+         y = "Estimated recombination efficiency",
+         x = "Gene ordered by estimate average", color = "# of colonies\ncounted",
+         shape = "Model type")
+```
+
+
+## Can we deal with more than one grouping?
+
+```{r echo=FALSE, out.width='100%'}
+knitr::include_graphics('./gfp_experiment.png')
+```
+
+## Modeling variation in different groupings using multiple varying intercepts
+
+* This time we gathered replicates on different days
+* We also tried to obtain the desired change using different techniques
+
+
+$$
+\begin{aligned}
+\text{gfp}_i \sim \text{Binomial}(n_i = 1, p_i) \\
+\text{logit}(p_i) = \alpha_{\text{gene}[i]} + \gamma_{\text{day}[i]} + \beta_{\text{technique}[i]} \\
+\beta_j \sim \text{Normal}(0, 0.5), \text{ for } j = 1 \dots 4 \\
+\alpha_j \sim \text{Normal}(\bar\alpha, \sigma_\alpha), \text{ for } j = 1 \dots 7\\
+\gamma_j \sim \text{Normal}(0, \sigma_\gamma), \text{ for } j = 1 \dots 6 \\
+\bar\alpha \sim \text{Normal}(0, 1.5) \\
+\sigma\alpha \sim \text{Exponential}(1) \\
+\sigma\gamma \sim \text{Exponential}(1)
+\end{aligned}
+$$
+
+## Multiple varying intercepts
+
+```{r}
+data(chimpanzees, package = "rethinking")
+d <- chimpanzees
+rm(chimpanzees)
+```
+
+
+```{r}
+d <- d %>%
+    mutate(actor = factor(actor),
+           block = factor(block),
+           treatment = factor(1 + prosoc_left + 2* condition))
+```
+
+
+```{r}
+b13.4 <-
+    brm(data = d,
+        family = binomial,
+        bf(pulled_left | trials(1) ~ a + b,
+           a ~ 1 + (1 | actor) + (1 | block),
+           b ~ 0 + treatment,
+           nl = TRUE),
+        prior = c(prior(normal(0 ,0.5), nlpar = b),
+                        prior(normal(0, 1.5), class = b, coef = Intercept, nlpar = a),
+                        prior(exponential(1), class = sd, group = actor, nlpar = a),
+                        prior(exponential(1), class = sd, group = block, nlpar = a)),
+                  iter = 2000, warmup = 1000, chains = 4, cores = 4,
+                  seed = 13,
+                  file = "chapter13_files/b13.04")
+```
+
+
+```{r}
+post <- posterior_summary(b13.4, robust = T) %>% round(digits = 3) %>% as.data.frame() %>%
+    rownames_to_column("parameter")
+```
+
+```{r, fig.width = 7, fig.height = 3}
+post %>% filter(parameter != "lp__") %>%
+    mutate(parameter = str_replace(parameter, "actor", "gene"),
+                parameter = str_replace(parameter, "block", "day"),
+                parameter = str_replace(parameter, "treatment", "technique")) %>%
+    mutate(type = if_else(str_detect(parameter, "^sd"), "hyper",
+                   if_else(str_detect(parameter, "^r"), "random_gene",
+                           if_else(str_detect(parameter, "^b_b"), "beta", "hyper")))) %>%
+    ggplot(aes(y = parameter, x = Estimate, color = type)) +
+    geom_vline(xintercept = 0, linetype = 2) + 
+    geom_point() + geom_errorbarh(aes(xmin = Q2.5, xmax = Q97.5)) +
+    labs(title = "Multilevel parameter estimates",
+         y = "Parameter",
+         color = "Type",
+         x = "Estimate",
+         subtitle = "Posterior median; 95% CI")
+```
+
+## Estimating variance from different sources
+
+```{r}
+post <- posterior_samples(b13.4)
+```
+
+```{r, fig.width = 7, fig.height = 3}
+post %>%
+    pivot_longer(starts_with("sd")) %>%
+    
+    ggplot(aes(x = value, fill = name)) +
+    geom_density(size = 0, alpha = 3/4, adjust = 2/3, show.legend = FALSE) +
+    annotate(geom = "text", x = 0.67, y = 2, label = "day", color = "blue4") +
+    annotate(geom = "text", x = 2.725, y = 0.5, label = "gene", color = "blue1") +
+    scale_fill_manual(values = str_c("blue", c(1, 4))) +
+    scale_y_continuous(NULL, breaks = NULL) +
+    ggtitle("Posterior distribution of group-level standard deviation") +
+    labs(x = "") +
+    coord_cartesian(xlim = c(0, 4))
+```
+
+## How do I make predictions with all of this?
+
+* There are a couple of different scenarios you could consider:
+    * Making predictions for the same clusters you have already seen
+    * Making predictions for new clusters when thinking only about the average effects
+    * Making predictions for new clusters when thinking about variation from clusters
+
+## Making predictions for a set of cluster values
+
+* Predicting for a known set of clusters is as simple as doing the math
+* For example for Gene 5, day 1:
+
+$$
+\begin{aligned}
+\text{inv logit}(\alpha_5 + \gamma_1 + \beta_i) \text{ for } i = 1 \dots 4 
+\end{aligned}
+$$
+
+## Making predictions for a set of cluster values
+
+```{r, fig.width = 7, fig.height = 3}
+library(ggdist)
+labels = c("1", "2", "3", "4")
+post %>%
+    pivot_longer(b_b_treatment1:b_b_treatment4) %>%
+    mutate(fitted = inv_logit_scaled(b_a_Intercept + value + `r_actor__a[5,Intercept]` +
+                                         `r_block__a[1,Intercept]`)) %>%
+    mutate(technique = factor(str_remove(name, "b_b_treatment"),
+                              labels = labels)) %>%
+    select(name:technique) %>%
+    group_by(technique) %>%
+    mean_qi(fitted) %>%
+    
+    ggplot(aes(x = technique, y = fitted)) +
+    geom_point(color = "blue3", size = 4) + geom_linerange(aes(ymin = .lower, ymax = .upper),
+                                                 color = "blue3") +
+    geom_point(data = d %>%
+                   filter(actor == 5) %>%
+                   group_by(treatment) %>%
+                   summarise(fitted = mean(pulled_left)) %>%
+                   ungroup %>%
+                   mutate(technique = factor(treatment, labels = labels)),
+               color ="black", shape =1, size = 4) + coord_cartesian(ylim = c(0,1)) +
+    labs(title = "Predictions for Gene 5, Day 1",
+         subtitle = "Posterior median; 95% CI; Empirical black",
+         y = "Recombination Efficiency",
+         x = "Technique")
+```
+
+
+## Making predictions for new clusters - the average gene
+
+* First let's think about making a prediction for the average gene
+* Here we will make good use of the $\bar\alpha$ parameter
+* Since the average effect of the day was zero we will ignore it
+* Calculating the effects for the average gene is then
+
+$$
+\begin{aligned}
+\text{inv logit}(\bar\alpha + \beta_i) \text{ for } i = 1 \dots 4 
+\end{aligned}
+$$
+
+## Making predictions for new clusters - the average gene
+
+```{r, fig.width = 7, fig.height = 3}
+(p1 <- post %>%
+    pivot_longer(b_b_treatment1:b_b_treatment4) %>%
+    mutate(fitted = inv_logit_scaled(b_a_Intercept + value)) %>%
+    mutate(Technique = factor(str_remove(name, "b_b_treatment"),
+                              labels = labels)) %>%
+    select(name:Technique) %>%
+    group_by(Technique) %>%
+    mean_qi(fitted, .width = 0.8) %>%
+    
+ggplot(aes(x = Technique, y = fitted)) +
+    geom_point(color = "blue3", size = 4) + geom_linerange(aes(ymin = .lower, ymax = .upper),
+                                                 color = "blue3")  + 
+    coord_cartesian(ylim = c(0,1)) +
+    geom_line(aes(group = 1)) +
+    labs(title = "Predictions for the average gene",
+         subtitle = "Posterior median; 80% CI",
+         y = "Recombination Efficiency",
+         x = "Technique") )
+```
+
+
+## Making predictions for new clusters - including gene-to-gene variation
+
+* Next let's also consider the variation between different genes in our estimate
+* This time we will need to simulate from two levels in the model
+
+$$
+\begin{aligned}
+\alpha_\text{sim} \sim \text{Normal}(\bar\alpha, \sigma_\text{gene}) \\
+\text{inv logit}(\alpha_\text{sim} + \beta_i) \text{ for } i = 1 \dots 4
+\end{aligned}
+$$
+
+
+
+## Making predictions for new clusters - including gene-to-gene variation
+
+```{r, fig.width = 7, fig.height = 3}
+( p2 <- post %>%
+    mutate(a_sim = rnorm(n(), mean = b_a_Intercept, sd = sd_actor__a_Intercept)) %>%
+    pivot_longer(b_b_treatment1:b_b_treatment4) %>%
+    mutate(fitted = inv_logit_scaled(a_sim + value)) %>%
+    mutate(Technique = factor(str_remove(name, "b_b_treatment"),
+                              labels = labels)) %>%
+    select(name:Technique) %>%
+    group_by(Technique) %>%
+    mean_qi(fitted, .width = 0.8) %>%
+    
+ggplot(aes(x = Technique, y = fitted)) +
+    geom_point(color = "blue3", size = 4) + geom_linerange(aes(ymin = .lower, ymax = .upper),
+                                                 color = "blue3")  + 
+    coord_cartesian(ylim = c(0,1)) +
+    geom_line(aes(group = 1)) +
+    labs(title = "Posterior Predictions for new genes",
+         subtitle = "Posterior median; 80% CI",
+         y = "Recombination Efficiency",
+         x = "Technique") )
+```
+
+
+## Making predictions for new clusters - Simulation
+
+* Instead of looking at summaries let's actually look at a bunch of simulated genes
+
+```{r, fig.width = 7, fig.height = 3}
+
+( p3 <- post %>%
+      mutate(iter = 1:n()) %>%
+      slice_sample(n = 100) %>%
+    mutate(a_sim = rnorm(n(), mean = b_a_Intercept, sd = sd_actor__a_Intercept)) %>%
+    pivot_longer(b_b_treatment1:b_b_treatment4) %>%
+    mutate(fitted = inv_logit_scaled(a_sim + value)) %>%
+    mutate(Technique = factor(str_remove(name, "b_b_treatment"),
+                              labels = labels)) %>%
+    select(iter:Technique) %>%
+    
+ggplot(aes(x = Technique, y = fitted, group = iter)) +
+    geom_line(color = "blue3", alpha = 0.5) + 
+    coord_cartesian(ylim = c(0,1)) +
+    labs(title = "100 simulated genes",
+         y = "Recombination Efficiency",
+         x = "Technique") )
+```
+
+## Making predictions for new clusters - Summary
+
+```{r, fig.width = 7, fig.height = 3}
+p1 + p2 + p3
+```
+
+## Multilevel models - Major take aways and a look ahead
+
+* Multilevel models help you explicitly model variation based on groupings in your data
+* The partial pooling aspect of these models allows you to share information between related groups. This can improve estimates where you have sparse sampling
+* So far we have focused on **varying intercepts** models where we only use the
+multilevel approach for intercepts in our models
+* We saw that we could model variation for more than one type of group in a dataset
+* In the next chapters we will see how we can extend this approach to allow for
+    * Varying slopes
+    * Dealing with continuous "groups" with a Gaussian process
+    * Dealing with missing data
+    * Using these techniques with more domain specific models such as DiffEQs
